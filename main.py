@@ -311,7 +311,23 @@ class CreateSessionResponse(BaseModel):
     questions:List[str]
     current_question_idx:int
 
+class SessionState(BaseModel):
+    job_role:str
+    experience:int
+    data: List[Dict]
+    current_question_idx:int
+    final_report : str
 
+class SubmitAnswerRequest(BaseModel):
+    answer:str
+
+
+class SubmitAnswerResponse(BaseModel):
+    question_idx:int
+    question:str
+    feedback:str
+    next_question_idx:Optional[int] = None
+    next_question:Optional[str] = None
 
 
 @app.post("/sessions", response_model=CreateSessionResponse, status_code=201)
@@ -351,3 +367,51 @@ async def create_session(payload: CreateSessionRequest):
         questions=questions,
         current_question_idx=values.get("current_question_idx", 0),
     )
+
+
+@app.get("/sessions/{session_id}")
+def get_session(session_id:str):
+    config = {"configurable": {"thread_id": session_id}}
+    state = compiled_graph.get_state(config)
+
+    values = state.values
+    return SessionState(
+        job_role =values["job_role"],
+        experience= values["experience"],
+        data = values['data'],
+        current_question_idx=values.get("current_question_idx", 0),
+        final_report= values.get("final_report", "")
+    )
+
+@app.post("/sessions/{session_id}/answers")
+def submit_answer(session_id:str, payload:SubmitAnswerRequest):
+    config = {"configurable": {"thread_id": session_id}}
+    state = compiled_graph.get_state(config)
+    values = state.values
+    idx = values.get("current_question_idx", 0)
+    question = values['data'][idx]['question']
+    
+
+    eval_state = {**values, "last_answer": payload.answer.strip()}
+    updated_state = evaluate_answer(eval_state)
+    compiled_graph.update_state(config, updated_state)
+
+    if updated_state.get('current_question_idx', 0) < 5:
+        next_q_idx = updated_state['current_question_idx']
+        next_q = updated_state['data'][next_q_idx]['question']
+    else:
+        "generate_final_report"    
+    
+
+    return SubmitAnswerResponse(
+        question_idx= idx,
+        question= question,
+        feedback= updated_state['data'][idx]['feedback'],
+        next_question_idx= next_q_idx,
+        next_question= next_q
+    )
+
+
+
+
+
