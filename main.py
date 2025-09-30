@@ -384,32 +384,78 @@ def get_session(session_id:str):
     )
 
 @app.post("/sessions/{session_id}/answers")
-def submit_answer(session_id:str, payload:SubmitAnswerRequest):
+def submit_answer(session_id: str, payload: SubmitAnswerRequest):
+    config = {"configurable": {"thread_id": session_id}}
+
+    # Get current state
+    state = compiled_graph.get_state(config)
+    if not state or not state.values:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    values = state.values
+    idx = values.get("current_question_idx", 0)
+
+    # If interview already complete, return the final state gracefully
+    if idx >= 5:
+        return SubmitAnswerResponse(
+            question_idx=4,
+            question=values["data"][4]["question"] if values.get("data") else "",
+            feedback=values["data"][4]["feedback"] if values.get("data") else "",
+            next_question_idx=None,
+            next_question=None,
+        )
+
+    # Get the current question safely
+    try:
+        question = values["data"][idx]["question"]
+    except (IndexError, KeyError, TypeError):
+        raise HTTPException(status_code=500, detail="Corrupt session state")
+
+    # Evaluate the answer (pure function), then persist to the graph
+    eval_state = {**values, "last_answer": payload.answer.strip()}
+    updated_state = evaluate_answer(eval_state)
+
+    # Persist the updated state (NOTE: pass config!)
+    compiled_graph.update_state(config, updated_state)
+
+    # Decide next step / response payload
+    if updated_state.get("current_question_idx", 0) < 5:
+        next_q_idx = updated_state["current_question_idx"]
+        next_q = updated_state["data"][next_q_idx]["question"]
+        return SubmitAnswerResponse(
+            question_idx=idx,
+            question=question,
+            feedback=updated_state["data"][idx]["feedback"],
+            next_question_idx=next_q_idx,
+            next_question=next_q,
+        )
+    else:
+        # Generate final report, persist it (NOTE: pass config!)
+        final_state = generate_final_report(updated_state)
+        compiled_graph.update_state(config, final_state)
+
+        return SubmitAnswerResponse(
+            question_idx=idx,
+            question=question,
+            feedback=updated_state["data"][idx]["feedback"],
+            next_question_idx=None,
+            next_question=None,
+        )
+
+@app.get("/sessions/{session_id}/report")
+def get_report(session_id:str):
     config = {"configurable": {"thread_id": session_id}}
     state = compiled_graph.get_state(config)
     values = state.values
-    idx = values.get("current_question_idx", 0)
-    question = values['data'][idx]['question']
-    
 
-    eval_state = {**values, "last_answer": payload.answer.strip()}
-    updated_state = evaluate_answer(eval_state)
-    compiled_graph.update_state(config, updated_state)
+    return {
+        "job_role": values['job_role'],
+        "experience": values['experience'],
+        "final_report" : values.get("final_report", "")
+    }
 
-    if updated_state.get('current_question_idx', 0) < 5:
-        next_q_idx = updated_state['current_question_idx']
-        next_q = updated_state['data'][next_q_idx]['question']
-    else:
-        "generate_final_report"    
-    
 
-    return SubmitAnswerResponse(
-        question_idx= idx,
-        question= question,
-        feedback= updated_state['data'][idx]['feedback'],
-        next_question_idx= next_q_idx,
-        next_question= next_q
-    )
+
 
 
 
